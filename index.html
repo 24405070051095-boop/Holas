@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pizarrón Compartido</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui;background:#0f172a;color:#fff}
+header{padding:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#1e293b}
+header h1{font-size:16px;margin:0 auto 0 0}
+input,button{padding:9px 12px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff}
+button{background:#38bdf8;color:#000;font-weight:700;cursor:pointer;border:none}
+button.sec{background:#334155;color:#fff}
+#status{font-size:12px;color:#94a3b8;width:100%}
+#tools{display:flex;gap:8px;flex-wrap:wrap;padding:10px;align-items:center;background:#1e293b}
+#tools input[type=color]{width:45px;height:35px;padding:2px}
+#tools input[type=range]{width:100px}
+canvas{display:block;background:#fff;margin:10px auto;border-radius:10px;touch-action:none;cursor:crosshair;max-width:98vw}
+#link{font-size:12px;word-break:break-all;color:#38bdf8}
+</style>
+</head>
+<body>
+<header>
+<h1>✏️ Pizarrón Compartido</h1>
+<input id="roomInput" placeholder="Código sala ej: 502">
+<button onclick="crearSala()">Crear Sala</button>
+<button class="sec" onclick="unirseSala()">Unirse</button>
+</header>
+<div style="padding:0 10px">
+<p id="status">1. Crea una sala, 2. Copia el link y mándaselo a la otra persona.</p>
+<p id="link"></p>
+</div>
+<div id="tools">
+<label>Color:</label><input type="color" id="color" value="#000000">
+<label>Grosor:</label><input type="range" id="size" min="1" max="20" value="4">
+<button onclick="setColor('#000000')">Negro</button>
+<button onclick="setColor('#ef4444')">Rojo</button>
+<button onclick="setColor('#2563eb')">Azul</button>
+<button onclick="setColor('#16a34a')">Verde</button>
+<button onclick="setColor('#ffffff')">Borrador</button>
+<button onclick="limpiar(true)" style="background:#ef4444;color:#fff">Borrar Todo</button>
+</div>
+<canvas id="board" width="1000" height="600"></canvas>
+
+<script>
+const canvas=document.getElementById('board');
+const ctx=canvas.getContext('2d');
+const colorEl=document.getElementById('color');
+const sizeEl=document.getElementById('size');
+const statusEl=document.getElementById('status');
+const linkEl=document.getElementById('link');
+let drawing=false, lastX=0, lastY=0;
+let peer=null, conn=null, miId=null, salaActual='';
+
+function setColor(c){ colorEl.value=c; }
+function pos(e){
+  const r=canvas.getBoundingClientRect();
+  const t=e.touches?e.touches[0]:e;
+  return {x:(t.clientX-r.left)*(canvas.width/r.width), y:(t.clientY-r.top)*(canvas.height/r.height)};
+}
+function dibujar(x0,y0,x1,y1,color,size,enviar){
+  ctx.strokeStyle=color; ctx.lineWidth=size; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+  if(enviar && conn && conn.open){
+    conn.send({type:'draw',x0,y0,x1,y1,color,size});
+  }
+}
+canvas.addEventListener('mousedown',e=>{drawing=true; const p=pos(e); lastX=p.x; lastY=p.y;});
+canvas.addEventListener('mousemove',e=>{
+  if(!drawing) return;
+  const p=pos(e);
+  dibujar(lastX,lastY,p.x,p.y,colorEl.value,sizeEl.value,true);
+  lastX=p.x; lastY=p.y;
+});
+window.addEventListener('mouseup',()=>drawing=false);
+canvas.addEventListener('touchstart',e=>{e.preventDefault(); drawing=true; const p=pos(e); lastX=p.x; lastY=p.y;},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault(); if(!drawing)return; const p=pos(e); dibujar(lastX,lastY,p.x,p.y,colorEl.value,sizeEl.value,true); lastX=p.x; lastY=p.y;},{passive:false});
+canvas.addEventListener('touchend',()=>drawing=false);
+
+function limpiar(enviar){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(enviar && conn && conn.open) conn.send({type:'clear'});
+}
+function onConn(c){
+  conn=c;
+  conn.on('open',()=>{ statusEl.textContent='✅ Conectado. Lo que escribas lo ve la otra persona y viceversa.'; });
+  conn.on('data',d=>{
+    if(d.type==='draw') dibujar(d.x0,d.y0,d.x1,d.y1,d.color,d.size,false);
+    if(d.type==='clear') ctx.clearRect(0,0,canvas.width,canvas.height);
+  });
+  conn.on('close',()=>{ statusEl.textContent='⚠️ La otra persona se desconectó'; });
+}
+function crearSala(){
+  let codigo=document.getElementById('roomInput').value.trim()||Math.floor(1000+Math.random()*9000).toString();
+  salaActual=codigo;
+  document.getElementById('roomInput').value=codigo;
+  if(peer) peer.destroy();
+  peer=new Peer('pizarron-'+codigo);
+  peer.on('open',id=>{
+    miId=id;
+    statusEl.textContent='🟢 Sala creada: '+codigo+' - Esperando a la otra persona...';
+    let url=location.origin+location.pathname+'?sala='+codigo;
+    linkEl.innerHTML='Comparte este link: <br><b>'+url+'</b><br><button onclick="copiarLink()">Copiar Link</button>';
+  });
+  peer.on('connection',c=>onConn(c));
+  peer.on('error',e=>{ statusEl.textContent='Error: '+e.type+' - Intenta con otro código'; });
+}
+function unirseSala(){
+  let codigo=document.getElementById('roomInput').value.trim();
+  if(!codigo){ alert('Escribe el código de la sala'); return; }
+  if(peer) peer.destroy();
+  peer=new Peer(); // id aleatorio para invitado
+  peer.on('open',()=>{
+    conn=peer.connect('pizarron-'+codigo);
+    onConn(conn);
+    statusEl.textContent='Conectando a sala '+codigo+'...';
+  });
+}
+function copiarLink(){
+  let url=location.origin+location.pathname+'?sala='+salaActual;
+  navigator.clipboard.writeText(url).then(()=>alert('Link copiado'));
+}
+// Auto-unirse si viene con ?sala=
+const params=new URLSearchParams(location.search);
+if(params.get('sala')){
+  document.getElementById('roomInput').value=params.get('sala');
+  setTimeout(unirseSala,500);
+}
+</script>
+</body>
+</html>
